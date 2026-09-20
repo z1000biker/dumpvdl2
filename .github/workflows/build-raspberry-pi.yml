@@ -83,7 +83,7 @@ jobs:
               PKG=/tmp/pkg
               mkdir -p "$PKG/lib"
               cp build/src/dumpvdl2 "$PKG/"
-              find /usr/local -type f -o -type l | grep '/libacars\\.so' | while read -r f; do
+              find /usr/local -type f -o -type l | grep '/libacars-2\\.so' | while read -r f; do
                 cp -a "$f" "$PKG/lib/"
               done
               cp README.md LICENSE "$PKG/"
