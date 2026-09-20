@@ -110,6 +110,7 @@ jobs:
           set -euxo pipefail
           git config user.name "Z1000biker"
           git config user.email "sv1eex.nik@gmail.com"
-          git add src/dumpvdl2.c src/kvargs.c src/fmtr-text.c src/idrp.c src/input-raw_frames_file.c src/output-file.c src/output-udp.c src/CMakeLists.txt .github/workflows/build-windows-x64.yml
+          git add src/dumpvdl2.c src/kvargs.c src/fmtr-text.c src/idrp.c src/input-raw_frames_file.c src/output-file.c src/output-udp.c src/CMakeLists.txt
+          git add -f .github/workflows/build-windows-x64.yml
           git commit -m "Add Windows x64 support"
           git push --force origin HEAD:refs/heads/windows-x64-support
