@@ -1,0 +1,138 @@
+name: Build and release Windows x64
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Windows port files
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            patch
+            make
+          pacboy: >-
+            toolchain:p
+            cmake:p
+            ninja:p
+            pkgconf:p
+            glib2:p
+            rtl-sdr:p
+            sqlite3:p
+            zeromq:p
+            protobuf-c:p
+            python:p
+
+      - name: Build libacars 2.2.1
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP"
+          git clone --depth 1 --branch v2.2.1 https://github.com/szpajder/libacars.git
+          cmake -S libacars -B libacars/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/ucrt64
+          cmake --build libacars/build
+          cmake --install libacars/build
+
+      - name: Clone and patch dumpvdl2 2.7.0
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP"
+          git clone --depth 1 --branch v2.7.0 https://github.com/szpajder/dumpvdl2.git
+          cd dumpvdl2
+          python "$GITHUB_WORKSPACE/ci/patch_dumpvdl2_windows.py"
+
+      - name: Configure and build dumpvdl2
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/dumpvdl2"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DRTLSDR=TRUE \
+            -DMIRISDR=FALSE \
+            -DSDRPLAY=FALSE \
+            -DSDRPLAY3=FALSE \
+            -DSOAPYSDR=FALSE \
+            -DETSY_STATSD=FALSE \
+            -DSQLITE=TRUE \
+            -DZMQ=TRUE \
+            -DRAW_BINARY_FORMAT=TRUE
+          cmake --build build -v
+
+      - name: Assemble portable package
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/dumpvdl2"
+          rm -rf dist
+          mkdir -p dist
+          cp build/src/dumpvdl2.exe dist/
+          ldd build/src/dumpvdl2.exe | tee dist/ldd.txt
+          ldd build/src/dumpvdl2.exe | awk '/\/ucrt64\/bin\// {print $3}' | while read -r dll; do
+            [ -f "$dll" ] && cp -n "$dll" dist/
+          done
+          cp README.md LICENSE dist/
+          printf '%s\n' \
+            'dumpvdl2 2.7.0 - unofficial Windows x64 port (UCRT64)' \
+            'Built from upstream tag v2.7.0.' \
+            'Enabled: RTL-SDR, SQLite, ZeroMQ, raw binary format (protobuf-c).' \
+            'Tested: Windows startup and RTL-SDR Blog V4 device/tuner initialization.' \
+            > dist/WINDOWS-X64.txt
+          file dist/dumpvdl2.exe | tee dist/file-info.txt
+          /usr/bin/sha256sum dist/dumpvdl2.exe | tee dist/SHA256SUMS.txt
+
+      - name: Smoke test
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/dumpvdl2/dist"
+          ./dumpvdl2.exe --help > help.txt 2>&1
+          cat help.txt
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP "dumpvdl2\dist\*"
+          $zip = Join-Path $env:RUNNER_TEMP "dumpvdl2-2.7.0-windows-x64.zip"
+          Compress-Archive -Path $source -DestinationPath $zip -Force
+          Get-FileHash $zip -Algorithm SHA256
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dumpvdl2-2.7.0-windows-x64
+          path: ${{ runner.temp }}\dumpvdl2-2.7.0-windows-x64.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v2.7.0-windows-x64"
+          $zip = Join-Path $env:RUNNER_TEMP "dumpvdl2-2.7.0-windows-x64.zip"
+          gh release view $tag --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag $zip --repo "${{ github.repository }}" --title "dumpvdl2 2.7.0 Windows x64" --notes "Unofficial Windows x64 build of dumpvdl2 2.7.0. Built with libacars 2.2.1 and RTL-SDR support. Windows startup and RTL-SDR Blog V4 initialization tested."
+          } else {
+            gh release upload $tag $zip --repo "${{ github.repository }}" --clobber
+          }
