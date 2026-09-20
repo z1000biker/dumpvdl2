@@ -1,0 +1,139 @@
+name: Build Raspberry Pi ARM32 and ARM64
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-raspberry-pi.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            platform: linux/arm64
+            image: arm64v8/debian:bookworm
+            artifact: dumpvdl2-2.7.0-raspberrypi-arm64
+          - arch: armhf
+            platform: linux/arm/v7
+            image: arm32v7/debian:bookworm
+            artifact: dumpvdl2-2.7.0-raspberrypi-armhf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,arm
+
+      - name: Build
+        shell: bash
+        env:
+                  run: |
+          set -euxo pipefail
+          TARGET_PLATFORM="${{ matrix.platform }}"
+          TARGET_IMAGE="${{ matrix.image }}"
+          ARTIFACT_NAME="${{ matrix.artifact }}"
+          mkdir -p "$RUNNER_TEMP/out"
+
+          docker run --rm \
+            --platform "$TARGET_PLATFORM" \
+            -e ARTIFACT_NAME="$ARTIFACT_NAME" \
+            -v "$RUNNER_TEMP/out:/out" \
+            "$TARGET_IMAGE" \
+            bash -lc '
+              set -euxo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                build-essential cmake git pkg-config ca-certificates file \
+                libglib2.0-dev librtlsdr-dev libsqlite3-dev \
+                libprotobuf-c-dev libzmq3-dev
+
+              cd /tmp
+              git clone --depth 1 --branch v2.2.1 https://github.com/szpajder/libacars.git
+              cmake -S libacars -B libacars/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+              cmake --build libacars/build -j2
+              cmake --install libacars/build
+              ldconfig
+
+              git clone --depth 1 --branch v2.7.0 https://github.com/szpajder/dumpvdl2.git
+              cd dumpvdl2
+              cmake -S . -B build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DRTLSDR=TRUE \
+                -DMIRISDR=FALSE \
+                -DSDRPLAY=FALSE \
+                -DSDRPLAY3=FALSE \
+                -DSOAPYSDR=FALSE \
+                -DETSY_STATSD=FALSE \
+                -DSQLITE=TRUE \
+                -DZMQ=TRUE \
+                -DRAW_BINARY_FORMAT=TRUE
+              cmake --build build -j2
+
+              PKG=/tmp/pkg
+              mkdir -p "$PKG/lib"
+              cp build/src/dumpvdl2 "$PKG/"
+              cp -a /usr/local/lib/libacars.so* "$PKG/lib/"
+              cp README.md LICENSE "$PKG/"
+
+              printf "%s\n" \
+                "#!/bin/sh" \
+                "HERE=\$(CDPATH= cd -- \"\$(dirname -- \"\$0\")\" && pwd)" \
+                "export LD_LIBRARY_PATH=\"\$HERE/lib:\${LD_LIBRARY_PATH:-}\"" \
+                "exec \"\$HERE/dumpvdl2\" \"\$@\"" > "$PKG/run-dumpvdl2.sh"
+              chmod +x "$PKG/run-dumpvdl2.sh"
+
+              printf "%s\n" \
+                "dumpvdl2 2.7.0 for Raspberry Pi OS (Debian Bookworm)" \
+                "Built with libacars 2.2.1." \
+                "Enabled: RTL-SDR, SQLite, ZeroMQ, raw binary format (protobuf-c)." \
+                "" \
+                "Install runtime dependencies:" \
+                "sudo apt update" \
+                "sudo apt install -y librtlsdr0 libglib2.0-0 libsqlite3-0 libprotobuf-c1 libzmq5" \
+                "" \
+                "Run:" \
+                "./run-dumpvdl2.sh --rtlsdr 0 --gain 38 136.975M" > "$PKG/RASPBERRY-PI.txt"
+
+              file "$PKG/dumpvdl2" | tee "$PKG/file-info.txt"
+              ldd "$PKG/dumpvdl2" | tee "$PKG/ldd.txt"
+              sha256sum "$PKG/dumpvdl2" | tee "$PKG/SHA256SUMS.txt"
+
+              tar -czf "/out/$ARTIFACT_NAME.tar.gz" -C "$PKG" .
+            '
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/out/${{ matrix.artifact }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          TAG="v2.7.0-raspberrypi"
+          FILE="$RUNNER_TEMP/out/${{ matrix.artifact }}.tar.gz"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$TAG" "$FILE" \
+              --repo "${{ github.repository }}" \
+              --title "dumpvdl2 2.7.0 Raspberry Pi" \
+              --notes "Unofficial Raspberry Pi OS builds for ARM64 (64-bit OS) and ARMv7/armhf (32-bit OS), with RTL-SDR support and bundled libacars 2.2.1."
+          fi
