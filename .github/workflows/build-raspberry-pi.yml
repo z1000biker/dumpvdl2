@@ -37,8 +37,7 @@ jobs:
 
       - name: Build
         shell: bash
-        env:
-                  run: |
+        run: |
           set -euxo pipefail
           TARGET_PLATFORM="${{ matrix.platform }}"
           TARGET_IMAGE="${{ matrix.image }}"
