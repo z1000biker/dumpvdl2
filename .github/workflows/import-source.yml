@@ -1,0 +1,49 @@
+name: Import upstream source tree
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/import-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch dumpvdl2 2.7.0 source
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch v2.7.0 https://github.com/szpajder/dumpvdl2.git /tmp/upstream
+          rm -rf /tmp/upstream/.git
+          cp -a /tmp/upstream/.gitignore .
+          cp -a /tmp/upstream/CMakeLists.txt .
+          cp -a /tmp/upstream/doc .
+          cp -a /tmp/upstream/etc .
+          cp -a /tmp/upstream/extras .
+          cp -a /tmp/upstream/proto .
+          cp -a /tmp/upstream/src .
+          # Large upstream test WAV and screenshots are not required to build the program.
+          # The complete compilable source tree, including generated ASN.1 sources, is copied above.
+
+      - name: Apply Windows compatibility changes
+        run: |
+          set -euxo pipefail
+          python3 ci/patch_dumpvdl2_windows.py
+
+      - name: Commit full source tree
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .gitignore CMakeLists.txt doc etc extras proto src
+          git commit -m "Import dumpvdl2 2.7.0 source with Windows x64 compatibility changes"
+          git push origin main
