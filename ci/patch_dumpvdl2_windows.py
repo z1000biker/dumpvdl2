@@ -104,6 +104,30 @@ new = '''static la_vstring *format_timestamp(struct timeval tv) {
 '''
 if old not in s: raise SystemExit("fmtr-text timestamp marker not found")
 s = s.replace(old, new, 1)
+old_tz = '''\tstrftime(tbuf, sizeof(tbuf), "%F %T", tmstruct);
+\tstrftime(tzbuf, sizeof(tzbuf), "%Z", tmstruct);
+'''
+new_tz = '''\tstrftime(tbuf, sizeof(tbuf), "%F %T", tmstruct);
+\tif(Config.utc == true) {
+\t\t/* MinGW strftime("%Z") may return an empty string for UTC. */
+\t\tsnprintf(tzbuf, sizeof(tzbuf), "GMT");
+\t} else {
+\t\tstrftime(tzbuf, sizeof(tzbuf), "%Z", tmstruct);
+\t}
+'''
+if old_tz not in s: raise SystemExit("fmtr-text timezone marker not found")
+s = s.replace(old_tz, new_tz, 1)
+save(p, s)
+
+# avlc.h: keep the 24-bit address, 3-bit type and 1-bit status in one
+# uint32_t bitfield allocation unit. Mixed uint32_t/uint8_t bitfields are
+# laid out differently by MinGW/MS ABI and caused valid addresses to be
+# labelled "reserved" and Command/Response to be decoded incorrectly.
+p, s = load("src/avlc.h")
+if s.count("uint8_t status:1;") != 2 or s.count("uint8_t type:3;") != 2:
+    raise SystemExit("avlc.h bitfield layout markers not found")
+s = s.replace("uint8_t status:1;", "uint32_t status:1;")
+s = s.replace("uint8_t type:3;", "uint32_t type:3;")
 save(p, s)
 
 # Use Winsock byte-order helpers on Windows.
@@ -150,6 +174,25 @@ static struct tm *dumpvdl2_localtime_r(const time_t *t, struct tm *out) {
 '''
 if marker not in s: raise SystemExit("output-file dumpvdl2 include marker not found")
 s = s.replace(marker, marker + compat + "\n", 1)
+
+# Date-stamp Windows log files by default when no explicit rotation mode is
+# supplied. stdout ("-") is still forced to ROT_NONE by out_file_init().
+old = '''\t} else {
+\t\tcfg->rotate = ROT_NONE;
+\t}
+\treturn cfg;
+'''
+new = '''\t} else {
+#ifdef _WIN32
+\t\tcfg->rotate = ROT_DAILY;
+#else
+\t\tcfg->rotate = ROT_NONE;
+#endif
+\t}
+\treturn cfg;
+'''
+if old not in s: raise SystemExit("output-file default rotation marker not found")
+s = s.replace(old, new, 1)
 save(p, s)
 
 # output-udp.c: native Winsock2 implementation while keeping POSIX path unchanged.
